@@ -1,0 +1,45 @@
+# =====================================================================
+# GITIGNORE FOR QUANTUM IoT ANOMALY DETECTION PROJECT
+# =====================================================================
+
+# Large dataset archives (>100MB rejected by GitHub)
+*.zip
+*.tar.gz
+*.7z
+N-BaIot.zip
+
+# Raw dataset CSV dumps (GBs in size)
+N-BaIoT/
+data/N-BaIoT/*.csv
+!data/N-BaIoT/1.benign.csv
+**/N-BaIoT/
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+.pytest_cache/
+.coverage
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Large model binaries
+models/*.joblib
+*.joblib
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Sensitive files / API tokens
+.env
+*.token
+ibm_token.txt
