@@ -1,20 +1,15 @@
 """
 app.py
 Executive Research Dashboard: Quantum-Enabled IoT Anomaly Detection.
-Compares Quantum Kernel One-Class SVM against Classical RBF OCSVM and Isolation Forest.
-Features:
-- Sleek modern UI styling (custom CSS, clean typography, executive KPI cards)
-- Quantum circuit visualizer (ZZFeatureMap gate representation)
-- Quantum Fidelity Gram Matrix (K_train) heatmap
-- PCA Scree plot and explained variance analyzer
-- Real-time single-packet anomaly scanner
-- One-click LaTeX table generator for project reports
-- Optional presentation 'Brainrot Mode'
+
+Compares Quantum Kernel One-Class SVM (ideal or NISQ-noise) against Classical
+Baselines (RBF OCSVM, Isolation Forest, LOF, Shallow Autoencoder) with multi-seed
+reproducibility, latency benchmarking (us/sample), and persistent run logs.
 """
 
 import io
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import matplotlib
 matplotlib.use("Agg")
@@ -29,14 +24,27 @@ from config import (
     DEFAULT_TRAIN_SIZE,
     DEFAULT_TEST_SIZE,
     DEFAULT_NU,
+    DEFAULT_SEED_LIST,
     RANDOM_STATE,
     DEVICE_NAMES,
-    WARN_SAMPLE_THRESHOLD,
-    HARD_SAMPLE_CAP,
+    NOISE_PRESETS,
+    LATENCY_TEST_BATCH,
+    RUNS_DIR,
 )
-from data_loader import DatasetDiscovery, TabularDataLoader, SyntheticAnomalyGenerator
+from data_loader import (
+    DatasetDiscovery,
+    TONIoTDiscovery,
+    TabularDataLoader,
+    SyntheticAnomalyGenerator,
+    SyntheticBenignGenerator,
+)
 from quantum_detector import QuantumKernelAnomalyDetector
-from classical_detector import ClassicalRBFAnomalyDetector, IsolationForestAnomalyDetector
+from classical_detector import (
+    ClassicalRBFAnomalyDetector,
+    IsolationForestAnomalyDetector,
+    LocalOutlierFactorDetector,
+)
+from autoencoder_detector import AutoencoderAnomalyDetector
 from evaluation import AnomalyEvaluation
 from visualization import Visualizer
 from advanced_quantum_engine import (
@@ -46,9 +54,14 @@ from advanced_quantum_engine import (
     NISQNoiseRobustnessSimulator,
     QuantumClassicalHybridEnsemble,
 )
+from benchmark_harness import (
+    run_multi_seed_benchmark,
+    aggregated_to_dataframe,
+    latency_to_dataframe,
+    persist_run,
+)
 
 
-# Page Configuration
 st.set_page_config(
     page_title="Quantum IoT Anomaly Detection | Research Prototype",
     page_icon="⚛️",
@@ -56,16 +69,13 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Sleek Modern Styling
+
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
-    
     html, body, [class*="css"] {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
-    
-    /* Header Card */
     .header-card {
         background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
         border: 1px solid #334155;
@@ -75,90 +85,25 @@ st.markdown("""
         margin-bottom: 24px;
         box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.25);
     }
-    .header-title {
-        font-size: 26px;
-        font-weight: 700;
-        letter-spacing: -0.5px;
-        color: #f8fafc;
-        margin-bottom: 6px;
-    }
-    .header-subtitle {
-        font-size: 15px;
-        color: #94a3b8;
-        font-weight: 400;
-    }
-    
-    /* KPI Metric Cards */
-    .kpi-container {
-        display: flex;
-        gap: 16px;
-        margin-bottom: 20px;
-    }
+    .header-title { font-size: 26px; font-weight: 700; color: #f8fafc; margin-bottom: 6px; letter-spacing: -0.5px; }
+    .header-subtitle { font-size: 15px; color: #94a3b8; font-weight: 400; }
     .kpi-card {
-        background: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 10px;
-        padding: 16px 20px;
-        box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
-        flex: 1;
+        background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px;
+        padding: 16px 20px; box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
         border-top: 3px solid #2563eb;
     }
-    .kpi-label {
-        font-size: 12px;
-        font-weight: 600;
-        color: #64748b;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        margin-bottom: 4px;
-    }
-    .kpi-value {
-        font-size: 22px;
-        font-weight: 700;
-        color: #0f172a;
-    }
-    .kpi-sub {
-        font-size: 12px;
-        color: #10b981;
-        font-weight: 500;
-        margin-top: 2px;
-    }
-    
-    /* Brainrot Presentation Banner */
-    .brainrot-banner {
-        background: linear-gradient(90deg, #ec4899, #8b5cf6);
-        color: white;
-        padding: 14px 20px;
-        border-radius: 10px;
-        font-weight: 600;
-        font-size: 15px;
-        margin-bottom: 20px;
-        box-shadow: 0 4px 12px rgba(236, 72, 153, 0.25);
-    }
-    
-    /* Scientific Observation Callout */
+    .kpi-label { font-size: 12px; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+    .kpi-value { font-size: 22px; font-weight: 700; color: #0f172a; }
+    .kpi-sub { font-size: 12px; color: #10b981; font-weight: 500; margin-top: 2px; }
     .observation-card {
-        background: #f8fafc;
-        border: 1px solid #cbd5e1;
-        border-left: 4px solid #3b82f6;
-        border-radius: 8px;
-        padding: 16px 20px;
-        margin-top: 18px;
-        margin-bottom: 22px;
-        color: #334155;
-        font-size: 14px;
-        line-height: 1.6;
+        background: #f8fafc; border: 1px solid #cbd5e1; border-left: 4px solid #3b82f6;
+        border-radius: 8px; padding: 16px 20px; margin-top: 18px; margin-bottom: 22px;
+        color: #334155; font-size: 14px; line-height: 1.6;
     }
-    
-    /* Code/Circuit Display */
     .circuit-box {
-        font-family: 'JetBrains Mono', monospace;
-        background: #0f172a;
-        color: #38bdf8;
-        padding: 16px;
-        border-radius: 8px;
-        overflow-x: auto;
-        font-size: 12.5px;
-        line-height: 1.4;
+        font-family: 'JetBrains Mono', monospace; background: #0f172a;
+        color: #38bdf8; padding: 16px; border-radius: 8px;
+        overflow-x: auto; font-size: 12.5px; line-height: 1.4;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -167,150 +112,194 @@ st.markdown("""
 # ==============================================================================
 # SIDEBAR CONTROLS
 # ==============================================================================
-
 with st.sidebar:
-    st.markdown("### ⚙️ Benchmark Control")
-    brainrot_mode = st.toggle("🧠 Presentation Flavor (Brainrot)", value=False, help="Injects Gen-Z IoT defense humor for lively oral presentations while keeping calculations 100% rigorous.")
+    st.markdown("### Benchmark Control")
 
-    st.markdown("---")
     st.markdown("#### 1. Data Source")
-    data_source = st.radio("Dataset", ["N-BaIoT Benchmark", "Custom Tabular CSV"], label_visibility="collapsed")
+    dataset_choice = st.radio(
+        "Dataset family",
+        ["N-BaIoT (network)", "TON-IoT (telemetry)", "Synthetic (no files needed)", "Upload custom CSV"],
+        index=0,
+        label_visibility="collapsed",
+    )
 
-    discovered_devices = DatasetDiscovery.discover_files()
-    device_id = 1
-    attack_choice = "mirai.ack"
-    uploaded_file = None
+    benign_df: Optional[pd.DataFrame] = None
+    attack_df: Optional[pd.DataFrame] = None
+    dataset_label = ""
+    evaluation_type_hint = ""
+    use_synthetic = False
+    attack_choice_display = "Synthetic"
 
-    if data_source == "N-BaIoT Benchmark":
-        if discovered_devices:
-            device_options = sorted(list(discovered_devices.keys()))
-            device_format = lambda d: f"Device {d}: {DEVICE_NAMES.get(d, 'IoT Device')}"
-            device_id = st.selectbox("Target IoT Device", device_options, format_func=device_format)
-
-            available_attacks = list(discovered_devices[device_id]["attacks"].keys())
-            attack_options = ["Synthetic Anomaly Validation"] + sorted(available_attacks)
-            attack_choice = st.selectbox("Attack Traffic Type", attack_options)
+    if dataset_choice == "N-BaIoT (network)":
+        discovered = DatasetDiscovery.discover_files()
+        if not discovered:
+            st.warning(
+                "No N-BaIoT CSVs discovered on disk. The dashboard will run against "
+                "a purely synthetic benign feed so the pipeline can still be validated."
+            )
         else:
-            st.error("No N-BaIoT CSVs detected in repository paths.")
-    else:
-        uploaded_file = st.file_uploader("Upload Tabular CSV", type=["csv"])
+            device_options = sorted(discovered.keys())
+            device_id = st.selectbox(
+                "Target IoT Device",
+                device_options,
+                format_func=lambda d: f"Device {d}: {DEVICE_NAMES.get(d, 'IoT Device')}",
+            )
+            attacks = discovered[device_id]["attacks"]
+            attack_labels = ["Synthetic anomaly"] + sorted(attacks.keys())
+            attack_choice_display = st.selectbox("Attack traffic", attack_labels)
+
+    elif dataset_choice == "TON-IoT (telemetry)":
+        toniot_files = TONIoTDiscovery.discover_files()
+        if not toniot_files:
+            st.warning(
+                "No TON-IoT CSVs discovered on disk. Place them under a `data/TON-IoT/` "
+                "folder to activate this branch. Falling back to synthetic benign feed."
+            )
+        else:
+            family = st.selectbox("TON-IoT device family", sorted(toniot_files.keys()))
+            attack_choice_display = "TON-IoT labelled attacks"
+
+    elif dataset_choice == "Upload custom CSV":
+        uploaded_file = st.file_uploader("Upload numeric tabular CSV", type=["csv"])
+        if uploaded_file is not None:
+            raw = pd.read_csv(uploaded_file)
+            num = raw.select_dtypes(include=[np.number])
+            if num.empty:
+                st.error("Uploaded CSV has no numeric columns.")
+            else:
+                benign_df = num
+                dataset_label = f"Uploaded CSV: {uploaded_file.name}"
+                use_synthetic = True
+                attack_choice_display = "Synthetic anomaly on uploaded CSV"
 
     st.markdown("---")
-    st.markdown("#### 2. Quantum Architecture")
+    st.markdown("#### 2. Detectors to benchmark")
+    include_qkernel = st.checkbox("Quantum Kernel OCSVM", value=True)
+    include_rbf = st.checkbox("Classical RBF OCSVM", value=True)
+    include_iforest = st.checkbox("Isolation Forest", value=True)
+    include_lof = st.checkbox("Local Outlier Factor", value=True)
+    include_autoenc = st.checkbox("Shallow Autoencoder", value=True)
+
+    st.markdown("---")
+    st.markdown("#### 3. Quantum architecture")
     n_components = st.select_slider(
-        "Quantum Register Size (Qubits / PCA)",
+        "Register size (qubits / PCA components)",
         options=[2, 4, 6, 8],
         value=2,
-        help="Number of orthogonal principal components mapped to quantum circuit qubits."
     )
-
-    quantum_reps = st.selectbox(
-        "ZZFeatureMap Entanglement Repetitions",
-        options=[1, 2],
+    quantum_reps = st.selectbox("ZZFeatureMap repetitions", options=[1, 2], index=0)
+    noise_choice = st.selectbox(
+        "NISQ noise model",
+        list(NOISE_PRESETS.keys()),
         index=0,
-        help="Circuit depth for two-qubit R_ZZ entangling gates."
+        help="Applies an analytical depolarising channel to both encoded states.",
     )
+    noise_prob = NOISE_PRESETS[noise_choice]
 
     st.markdown("---")
-    st.markdown("#### 3. Execution Parameters")
-    train_sample_limit = st.slider(
-        "Benign Training Samples (N)",
-        min_value=50,
-        max_value=400,
-        value=150,
-        step=25,
-        help="Training references. Pairwise quantum kernel scales as O(N^2)."
-    )
+    st.markdown("#### 4. Execution & reproducibility")
+    train_sample_limit = st.slider("Benign training samples (N)", 50, 400, 120, 10)
+    test_sample_limit = st.slider("Test samples per class (M)", 25, 250, 60, 5)
+    ocsvm_nu = st.slider("OCSVM outlier bound nu", 0.01, 0.50, 0.10, 0.01)
 
-    test_sample_limit = st.slider(
-        "Test Samples per Class (M)",
-        min_value=25,
-        max_value=250,
-        value=75,
-        step=25,
-        help="Samples evaluated for benign and attack classes."
+    n_seeds = st.slider(
+        "Number of seeds (multi-run mean ± std)",
+        min_value=1,
+        max_value=len(DEFAULT_SEED_LIST),
+        value=3,
+        help="Runs the full pipeline under each seed and reports mean ± std.",
     )
+    latency_batch = st.slider("Latency batch size (samples)", 20, 400, LATENCY_TEST_BATCH, 20)
 
-    ocsvm_nu = st.slider(
-        "One-Class SVM Outlier Bound (nu)",
-        min_value=0.01,
-        max_value=0.50,
-        value=0.10,
-        step=0.01,
-        help="Upper bound on fraction of training outliers and lower bound on support vectors."
-    )
-
-    run_benchmark = st.button("⚡ Execute Benchmark", use_container_width=True, type="primary")
+    st.markdown("---")
+    persist_choice = st.checkbox("Save this run to results/runs/", value=True)
+    run_benchmark = st.button("Execute benchmark", use_container_width=True, type="primary")
 
 
 # ==============================================================================
-# HEADER SECTION
+# HEADER
 # ==============================================================================
-
 st.markdown(f"""
 <div class="header-card">
     <div class="header-title">Quantum-Enabled Anomaly Detection for IoT Networks</div>
-    <div class="header-subtitle">Empirical Comparison: Quantum Fidelity Kernel OCSVM vs. Classical Baselines (Unsupervised)</div>
+    <div class="header-subtitle">Empirical Comparison Across Ideal / NISQ Quantum Kernels and Four Classical Baselines &mdash; Multi-Seed, Reproducible.</div>
 </div>
 """, unsafe_allow_html=True)
 
-if brainrot_mode:
-    st.markdown("""
-    <div class="brainrot-banner">
-        🧠 BRAINROT MODE ACTIVATED: Quantum Hilbert space is firing at 100% rizz. Zero skibidi packets sneaking past the firewall. 🗿
-    </div>
-    """, unsafe_allow_html=True)
-
 
 # ==============================================================================
-# DATA LOADING & REPRODUCIBLE PARTITIONS
+# DATA ACQUISITION
 # ==============================================================================
-
-benign_df = None
-attack_df = None
-is_synthetic = False
-dataset_title = ""
-
-if data_source == "N-BaIoT Benchmark" and discovered_devices:
-    benign_path = discovered_devices[device_id]["benign"]
-    dataset_title = f"N-BaIoT Device {device_id} ({DEVICE_NAMES.get(device_id, 'IoT Device')})"
-    try:
-        benign_df, benign_meta = TabularDataLoader.load_csv(
-            benign_path,
-            nrows=(train_sample_limit + test_sample_limit) * 4
+def _load_dataset() -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], str, str, bool]:
+    """Resolves the chosen dataset into (benign_df, attack_df, label, eval_type, use_synthetic)."""
+    if dataset_choice == "N-BaIoT (network)":
+        discovered = DatasetDiscovery.discover_files()
+        if not discovered:
+            return (SyntheticBenignGenerator.generate(n_samples=800, n_features=20),
+                    None, "Synthetic N-BaIoT-style feed",
+                    "Synthetic anomaly validation", True)
+        device_id_local = sorted(discovered.keys())[0]  # sidebar selected value re-used
+        # Re-run sidebar lookup to grab the actually chosen id/attack (values persisted implicitly)
+        # We rely on session_state to remember prior choice; safe default is first device.
+        for k, v in st.session_state.items():
+            if k.startswith("selectbox") and isinstance(v, int) and v in discovered:
+                device_id_local = v
+        info = discovered[device_id_local]
+        benign_path = info["benign"]
+        if benign_path is None:
+            return (SyntheticBenignGenerator.generate(n_samples=800, n_features=20),
+                    None, "Synthetic N-BaIoT-style feed",
+                    "Synthetic anomaly validation", True)
+        benign_df_local, _ = TabularDataLoader.load_csv(
+            benign_path, nrows=(train_sample_limit + test_sample_limit) * 4
         )
-        if attack_choice == "Synthetic Anomaly Validation":
-            is_synthetic = True
-        else:
-            attack_path = discovered_devices[device_id]["attacks"].get(attack_choice)
-            if attack_path:
-                attack_df, _ = TabularDataLoader.load_csv(attack_path, nrows=test_sample_limit * 4)
-            else:
-                is_synthetic = True
-    except Exception as e:
-        st.error(f"Error loading dataset: {str(e)}")
-elif data_source == "Custom Tabular CSV" and uploaded_file is not None:
-    try:
-        raw_uploaded = pd.read_csv(uploaded_file)
-        numeric_uploaded = raw_uploaded.select_dtypes(include=[np.number])
-        if numeric_uploaded.empty:
-            st.error("The uploaded CSV contains no numerical features. Please upload numeric tabular data.")
-        else:
-            benign_df = numeric_uploaded
-            is_synthetic = True
-            dataset_title = f"Uploaded File: {uploaded_file.name}"
-    except Exception as e:
-        st.error(f"Failed to read CSV: {str(e)}")
+        label = f"N-BaIoT Device {device_id_local} ({DEVICE_NAMES.get(device_id_local, 'IoT Device')})"
 
-# Top Metric Cards
+        if attack_choice_display == "Synthetic anomaly" or attack_choice_display not in info["attacks"]:
+            return benign_df_local, None, label, "Synthetic anomaly validation", True
+
+        attack_path = info["attacks"][attack_choice_display]
+        attack_df_local, _ = TabularDataLoader.load_csv(attack_path, nrows=test_sample_limit * 4)
+        return benign_df_local, attack_df_local, label, f"Real attack ({attack_choice_display})", False
+
+    if dataset_choice == "TON-IoT (telemetry)":
+        toniot_files = TONIoTDiscovery.discover_files()
+        if not toniot_files:
+            return (SyntheticBenignGenerator.generate(n_samples=600, n_features=10),
+                    None, "Synthetic TON-IoT-style feed",
+                    "Synthetic anomaly validation", True)
+        family_local = sorted(toniot_files.keys())[0]
+        for k, v in st.session_state.items():
+            if isinstance(v, str) and v in toniot_files:
+                family_local = v
+        path = toniot_files[family_local]
+        benign_local, attack_local, meta = TabularDataLoader.load_toniot_csv(
+            path, nrows=(train_sample_limit + test_sample_limit) * 6
+        )
+        label = f"TON-IoT {family_local}"
+        if len(attack_local) == 0:
+            return benign_local, None, label, "Synthetic anomaly validation (no attack rows)", True
+        return benign_local, attack_local, label, "Real TON-IoT labelled attack", False
+
+    if dataset_choice == "Synthetic (no files needed)":
+        return (SyntheticBenignGenerator.generate(n_samples=800, n_features=15),
+                None, "Synthetic IoT-like feed",
+                "Synthetic anomaly validation", True)
+
+    # Upload custom CSV
+    return benign_df, None, dataset_label or "Uploaded CSV", "Synthetic anomaly validation", True
+
+
+benign_df, attack_df, dataset_label_resolved, evaluation_type_resolved, use_synthetic_resolved = _load_dataset()
+
 if benign_df is not None:
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.markdown(f"""
         <div class="kpi-card">
             <div class="kpi-label">Target Dataset</div>
-            <div class="kpi-value">{dataset_title.split('(')[0]}</div>
-            <div class="kpi-sub">{benign_df.shape[0]:,} records available</div>
+            <div class="kpi-value">{dataset_label_resolved.split('(')[0].strip()}</div>
+            <div class="kpi-sub">{benign_df.shape[0]:,} benign rows available</div>
         </div>
         """, unsafe_allow_html=True)
     with c2:
@@ -318,404 +307,384 @@ if benign_df is not None:
         <div class="kpi-card">
             <div class="kpi-label">Raw Features</div>
             <div class="kpi-value">{benign_df.shape[1]} dims</div>
-            <div class="kpi-sub">Packet statistics (100ms–1m)</div>
+            <div class="kpi-sub">PCA target: {n_components} qubits</div>
         </div>
         """, unsafe_allow_html=True)
     with c3:
+        atk_rows = len(attack_df) if attack_df is not None else 0
+        atk_label = "Synthetic" if use_synthetic_resolved else "Real"
         st.markdown(f"""
         <div class="kpi-card">
-            <div class="kpi-label">Traffic Evaluated</div>
-            <div class="kpi-value">{attack_choice if not is_synthetic else 'Synthetic'}</div>
-            <div class="kpi-sub">Ground-truth validation</div>
+            <div class="kpi-label">Attack Traffic</div>
+            <div class="kpi-value">{atk_label}</div>
+            <div class="kpi-sub">{atk_rows:,} attack rows loaded</div>
         </div>
         """, unsafe_allow_html=True)
     with c4:
         st.markdown(f"""
         <div class="kpi-card">
-            <div class="kpi-label">Quantum Space</div>
-            <div class="kpi-value">{n_components} Qubits</div>
-            <div class="kpi-sub">Hilbert Dim: 2^{n_components} = {2**n_components}</div>
+            <div class="kpi-label">Quantum Setup</div>
+            <div class="kpi-value">{n_components} qubits @ p={noise_prob:.3f}</div>
+            <div class="kpi-sub">Hilbert dim: 2^{n_components} = {2**n_components}</div>
         </div>
         """, unsafe_allow_html=True)
 
 
 # ==============================================================================
-# EXECUTION CONTROLLER
+# BENCHMARK EXECUTION
 # ==============================================================================
+def _detector_factories() -> Dict[str, Callable[[int], Any]]:
+    facts: Dict[str, Callable[[int], Any]] = {}
+    if include_qkernel:
+        def _q(seed: int):
+            return QuantumKernelAnomalyDetector(
+                n_components=n_components,
+                reps=quantum_reps,
+                nu=ocsvm_nu,
+                train_sample_limit=train_sample_limit,
+                noise_prob=noise_prob,
+                random_state=seed,
+            )
+        facts["Quantum Kernel OCSVM"] = _q
+    if include_rbf:
+        def _rbf(seed: int):
+            return ClassicalRBFAnomalyDetector(
+                n_components=n_components, nu=ocsvm_nu, random_state=seed
+            )
+        facts["Classical RBF OCSVM"] = _rbf
+    if include_iforest:
+        def _if(seed: int):
+            return IsolationForestAnomalyDetector(
+                n_components=n_components, random_state=seed
+            )
+        facts["Isolation Forest"] = _if
+    if include_lof:
+        def _lof(seed: int):
+            return LocalOutlierFactorDetector(
+                n_components=n_components, random_state=seed
+            )
+        facts["Local Outlier Factor"] = _lof
+    if include_autoenc:
+        def _ae(seed: int):
+            return AutoencoderAnomalyDetector(
+                n_components=n_components, random_state=seed
+            )
+        facts["Shallow Autoencoder"] = _ae
+    return facts
+
 
 if run_benchmark and benign_df is not None:
-    status_box = st.empty()
-    status_box.info("⚛️ [Step 1/4] Executing strictly leak-free train/test partition...")
-
-    # 1. Partition benign data (zero leakage)
-    benign_train, benign_test = TabularDataLoader.partition_benign(
-        benign_df,
-        train_size=train_sample_limit,
-        test_size=test_sample_limit,
-        random_state=RANDOM_STATE,
-    )
-
-    # 2. Acquire Attack Data
-    eval_type_label = f"Real Attack ({attack_choice})"
-    if is_synthetic or attack_df is None:
-        attack_test = SyntheticAnomalyGenerator.generate(
-            benign_test,
-            n_samples=test_sample_limit,
-            perturbation_factor=3.5,
-            random_state=RANDOM_STATE,
-        )
-        eval_type_label = "Synthetic anomaly validation"
+    factories = _detector_factories()
+    if not factories:
+        st.error("At least one detector must be selected.")
     else:
-        attack_test = TabularDataLoader.sample_attack(
-            attack_df,
-            sample_size=test_sample_limit,
-            random_state=RANDOM_STATE,
+        status_box = st.empty()
+        seeds = DEFAULT_SEED_LIST[:n_seeds]
+        status_box.info(
+            f"Running {len(factories)} detector(s) across {len(seeds)} seed(s) on {dataset_label_resolved}"
         )
 
-    test_data = pd.concat([benign_test, attack_test], ignore_index=True)
-    y_true = np.array([0] * len(benign_test) + [1] * len(attack_test), dtype=int)
+        def _progress(msg: str):
+            status_box.info(msg)
 
-    # 3. Model Training
-    results_list = []
-    scores_dict = {}
+        aggregated, metadata = run_multi_seed_benchmark(
+            detector_factories=factories,
+            benign_df=benign_df,
+            attack_df=attack_df,
+            dataset_label=dataset_label_resolved,
+            evaluation_type=evaluation_type_resolved,
+            train_size=train_sample_limit,
+            test_size=test_sample_limit,
+            seeds=seeds,
+            use_synthetic=use_synthetic_resolved,
+            latency_batch=latency_batch,
+            progress=_progress,
+        )
 
-    status_box.info(f"⚛️ [Step 2/4] Evaluating Quantum Fidelity Kernel on Aer Simulator ({n_components} Qubits, ZZFeatureMap)...")
-    q_det = QuantumKernelAnomalyDetector(
-        n_components=n_components,
-        reps=quantum_reps,
-        nu=ocsvm_nu,
-        train_sample_limit=train_sample_limit,
-    )
-    t0 = time.perf_counter()
-    q_det.fit(benign_train)
-    q_preds, q_scores, q_raw = q_det.predict(test_data)
-    q_runtime = time.perf_counter() - t0
+        config = {
+            "dataset_choice": dataset_choice,
+            "n_components": n_components,
+            "quantum_reps": quantum_reps,
+            "noise_prob": noise_prob,
+            "noise_preset": noise_choice,
+            "train_sample_limit": train_sample_limit,
+            "test_sample_limit": test_sample_limit,
+            "ocsvm_nu": ocsvm_nu,
+            "seeds": seeds,
+            "attack_choice_display": attack_choice_display,
+        }
+        run_dir = None
+        if persist_choice:
+            run_dir = persist_run(aggregated, metadata, config)
 
-    q_res = AnomalyEvaluation.evaluate(
-        model_name="Quantum Kernel OCSVM",
-        predictions=q_preds,
-        anomaly_scores=q_scores,
-        runtime_seconds=q_runtime,
-        y_true=y_true,
-        evaluation_type=eval_type_label,
-        dataset_name=dataset_title,
-        train_samples=len(benign_train),
-        test_samples=len(test_data),
-        features_before_pca=benign_df.shape[1],
-        quantum_features=n_components,
-    )
-    results_list.append(q_res)
-    scores_dict["Quantum Kernel OCSVM"] = (q_scores[:len(benign_test)], q_scores[len(benign_test):])
-
-    status_box.info("🧠 [Step 3/4] Fitting Classical RBF One-Class SVM baseline...")
-    c_rbf = ClassicalRBFAnomalyDetector(
-        n_components=n_components,
-        nu=ocsvm_nu,
-        random_state=RANDOM_STATE,
-    )
-    t0 = time.perf_counter()
-    c_rbf.fit(benign_train)
-    rbf_preds, rbf_scores, _ = c_rbf.predict(test_data)
-    rbf_runtime = time.perf_counter() - t0
-
-    rbf_res = AnomalyEvaluation.evaluate(
-        model_name="Classical RBF OCSVM",
-        predictions=rbf_preds,
-        anomaly_scores=rbf_scores,
-        runtime_seconds=rbf_runtime,
-        y_true=y_true,
-        evaluation_type=eval_type_label,
-        dataset_name=dataset_title,
-        train_samples=len(benign_train),
-        test_samples=len(test_data),
-        features_before_pca=benign_df.shape[1],
-        quantum_features=n_components,
-    )
-    results_list.append(rbf_res)
-    scores_dict["Classical RBF OCSVM"] = (rbf_scores[:len(benign_test)], rbf_scores[len(benign_test):])
-
-    status_box.info("🌲 [Step 4/4] Fitting Isolation Forest baseline...")
-    c_iforest = IsolationForestAnomalyDetector(
-        n_components=n_components,
-        random_state=RANDOM_STATE,
-    )
-    t0 = time.perf_counter()
-    c_iforest.fit(benign_train)
-    if_preds, if_scores, _ = c_iforest.predict(test_data)
-    if_runtime = time.perf_counter() - t0
-
-    if_res = AnomalyEvaluation.evaluate(
-        model_name="Isolation Forest",
-        predictions=if_preds,
-        anomaly_scores=if_scores,
-        runtime_seconds=if_runtime,
-        y_true=y_true,
-        evaluation_type=eval_type_label,
-        dataset_name=dataset_title,
-        train_samples=len(benign_train),
-        test_samples=len(test_data),
-        features_before_pca=benign_df.shape[1],
-        quantum_features=n_components,
-    )
-    results_list.append(if_res)
-    scores_dict["Isolation Forest"] = (if_scores[:len(benign_test)], if_scores[len(benign_test):])
-
-    # Cache state
-    st.session_state["results_list"] = results_list
-    st.session_state["scores_dict"] = scores_dict
-    st.session_state["test_data"] = test_data
-    st.session_state["y_true"] = y_true
-    st.session_state["q_preds"] = q_preds
-    st.session_state["q_scores"] = q_scores
-    st.session_state["q_detector"] = q_det
-    st.session_state["c_rbf"] = c_rbf
-    st.session_state["c_iforest"] = c_iforest
-    st.session_state["eval_type_label"] = eval_type_label
-
-    status_box.success("✅ Complete pipeline benchmark finished successfully!")
+        st.session_state["aggregated"] = aggregated
+        st.session_state["metadata"] = metadata
+        st.session_state["config"] = config
+        st.session_state["run_dir"] = run_dir
+        status_box.success("Benchmark complete.")
 
 
 # ==============================================================================
-# PRESENTATION TABS & DASHBOARD
+# RESULTS DASHBOARD
 # ==============================================================================
+if "aggregated" in st.session_state:
+    aggregated: Dict[str, Any] = st.session_state["aggregated"]
+    metadata: Dict[str, Any] = st.session_state["metadata"]
+    config_used: Dict[str, Any] = st.session_state["config"]
+    run_dir = st.session_state.get("run_dir")
 
-if "results_list" in st.session_state:
-    results_list = st.session_state["results_list"]
-    scores_dict = st.session_state["scores_dict"]
-    test_data = st.session_state["test_data"]
-    y_true = st.session_state["y_true"]
-    q_preds = st.session_state["q_preds"]
-    q_scores = st.session_state["q_scores"]
-    q_det: QuantumKernelAnomalyDetector = st.session_state["q_detector"]
-    eval_type_label = st.session_state["eval_type_label"]
+    if run_dir is not None:
+        st.info(f"Run saved to `{run_dir}` (git commit: `{metadata.get('git_commit') or 'n/a'}`).")
 
-    # Brainrot Mode Flavor Cards
-    if brainrot_mode:
-        q_rate = results_list[0].get("anomaly_rate", 0.0)
-        c_b1, c_b2 = st.columns(2)
-        with c_b1:
-            if q_rate > 0.40:
-                st.warning("🚨 BRO WHAT IS THIS PACKET DOING 💀 THE IOT DEVICE HAS LOST THE PLOT")
-            else:
-                st.info("🗿 Traffic looks suspiciously normal. No cap detected.")
-        with c_b2:
-            st.info(f"⚛️ Quantum brain cells: {results_list[0].get('quantum_features')} qubits computed across statevector Hilbert space!")
-
-    # Tabbed Interface
-    t_bench, t_circuit, t_spectral, t_scree, t_scan, t_export = st.tabs([
-        "📊 Benchmark Comparison",
-        "⚛️ Quantum Circuit & Kernel Gram Matrix",
-        "🔬 Quantum Spectral & Tomography",
-        "📉 Feature Space (PCA Scree)",
-        "🔍 Single-Packet Scanner",
-        "📄 LaTeX & Report Export",
+    t_bench, t_latency, t_quantum, t_scree, t_scan, t_export = st.tabs([
+        "Benchmark comparison",
+        "Latency (µs/sample)",
+        "Quantum circuit & spectral",
+        "Feature space (PCA)",
+        "Single-packet scanner",
+        "Export & LaTeX",
     ])
 
-    # -------------------------------------------------------------------------
-    # TAB 1: Benchmark Comparison
-    # -------------------------------------------------------------------------
+    # ----------------- TAB 1: BENCHMARK -----------------
     with t_bench:
-        st.markdown(f"#### Empirical Evaluation Results ({eval_type_label})")
-        comp_df = AnomalyEvaluation.to_dataframe(results_list)
-        disp_cols = ["model", "roc_auc", "pr_auc", "f1", "precision", "recall", "runtime_seconds", "anomaly_count", "anomaly_rate"]
-        
-        try:
-            st.dataframe(
-                comp_df[disp_cols].style.highlight_max(subset=["roc_auc", "pr_auc", "f1"], color="#dcfce7"),
-                use_container_width=True
+        st.markdown(f"#### Empirical evaluation (mean ± std across {len(config_used['seeds'])} seeds)")
+        df_agg = aggregated_to_dataframe(aggregated)
+        display_cols = ["detector", "roc_auc", "pr_auc", "f1", "precision", "recall", "runtime_s"]
+        st.dataframe(df_agg[display_cols], use_container_width=True)
+
+        # Bar chart of mean ROC-AUC with std error bars
+        names = list(aggregated.keys())
+        auc_means = [aggregated[n].roc_auc_mean for n in names]
+        auc_stds = [aggregated[n].roc_auc_std for n in names]
+        fig_bar, ax_bar = plt.subplots(figsize=(9, 4.6), dpi=140)
+        colors = ["#2563eb", "#f59e0b", "#10b981", "#ef4444", "#8b5cf6"]
+        bars = ax_bar.bar(
+            names, auc_means, yerr=auc_stds, capsize=6,
+            color=[colors[i % len(colors)] for i in range(len(names))],
+            edgecolor="#0f172a", linewidth=0.8,
+        )
+        for bar, mean, std in zip(bars, auc_means, auc_stds):
+            ax_bar.text(
+                bar.get_x() + bar.get_width() / 2,
+                min(1.02, mean + std + 0.02),
+                f"{mean:.3f}\n±{std:.3f}",
+                ha="center", va="bottom", fontsize=9, fontweight="bold",
             )
-        except Exception:
-            st.dataframe(comp_df[disp_cols], use_container_width=True)
+        ax_bar.set_ylim(0, 1.15)
+        ax_bar.set_ylabel("ROC-AUC (mean, error bar = std over seeds)")
+        ax_bar.set_title("Detector comparison across seeds")
+        ax_bar.grid(True, axis="y", linestyle=":", alpha=0.5)
+        plt.setp(ax_bar.get_xticklabels(), rotation=15, ha="right")
+        fig_bar.tight_layout()
+        st.pyplot(fig_bar)
 
-        q_auc = results_list[0].get("roc_auc")
-        rbf_auc = results_list[1].get("roc_auc")
-        if_auc = results_list[2].get("roc_auc")
+        # ROC / PR curves using the first seed's data (representative sample)
+        reps = [r.representative_result for r in aggregated.values() if r.representative_result is not None]
+        if reps:
+            c1, c2 = st.columns(2)
+            with c1:
+                st.pyplot(Visualizer.plot_roc_curves(reps))
+            with c2:
+                st.pyplot(Visualizer.plot_pr_curves(reps))
 
+            c3, c4 = st.columns(2)
+            with c3:
+                st.pyplot(Visualizer.plot_confusion_matrices(reps))
+            with c4:
+                st.pyplot(Visualizer.plot_runtime_comparison(reps))
+
+        # Scientific interpretation
+        best = max(aggregated.values(), key=lambda r: (r.roc_auc_mean if not np.isnan(r.roc_auc_mean) else -1))
+        q = aggregated.get("Quantum Kernel OCSVM")
         st.markdown(f"""
         <div class="observation-card">
-            <strong>🔬 Scientific Takeaway:</strong><br>
-            Under this experimental configuration, the <strong>Classical RBF One-Class SVM</strong> achieved a ROC-AUC of <code>{rbf_auc:.4f}</code> (Runtime: <code>{results_list[1].get('runtime_seconds'):.2f}s</code>), 
-            and <strong>Isolation Forest</strong> achieved <code>{if_auc:.4f}</code> (Runtime: <code>{results_list[2].get('runtime_seconds'):.2f}s</code>).<br>
-            The <strong>Quantum Kernel One-Class SVM</strong> achieved a ROC-AUC of <code>{q_auc:.4f}</code> (Runtime: <code>{results_list[0].get('runtime_seconds'):.2f}s</code>).<br>
-            <em>Conclusion:</em> Classical detectors demonstrated superior separation efficiency and executed over <strong>100x faster</strong> than simulated quantum statevector fidelity evaluation.
+            <strong>Scientific takeaway.</strong>
+            Across {len(config_used['seeds'])} seed(s) on <em>{metadata['dataset_label']}</em>,
+            the strongest detector by mean ROC-AUC was
+            <strong>{best.detector}</strong> at <code>{best.roc_auc_mean:.4f} ± {best.roc_auc_std:.4f}</code>.
+            The quantum kernel path
+            {"(with depolarising noise p = " + f"{config_used['noise_prob']:.3f}" + ")"
+              if config_used['noise_prob'] > 0 else "(ideal statevector)"}
+            achieved
+            <code>{q.roc_auc_mean:.4f} ± {q.roc_auc_std:.4f}</code> at
+            <code>{q.runtime_seconds_mean:.2f}s</code> per run
+            (vs. classical baselines around
+            <code>
+            {min(r.runtime_seconds_mean for k, r in aggregated.items() if k != 'Quantum Kernel OCSVM'):.2f}s
+            </code> at the fastest).
+        </div>
+        """ if q is not None else f"""
+        <div class="observation-card">
+            <strong>Scientific takeaway.</strong>
+            Best detector by mean ROC-AUC:
+            <strong>{best.detector}</strong> at <code>{best.roc_auc_mean:.4f} ± {best.roc_auc_std:.4f}</code>.
         </div>
         """, unsafe_allow_html=True)
 
+    # ----------------- TAB 2: LATENCY -----------------
+    with t_latency:
+        st.markdown("#### Inference latency (roadmap protocol)")
+        st.markdown("""
+        Single-threaded predict on a fixed batch, warm-up discarded, `time.perf_counter`,
+        reported in microseconds per sample as median and 95th percentile over repeats.
+        """)
+        lat_df = latency_to_dataframe(aggregated)
+        if lat_df.empty:
+            st.warning("Latency measurement did not produce any rows. Check detector runs.")
+        else:
+            st.dataframe(lat_df, use_container_width=True)
+            fig_lat, ax_lat = plt.subplots(figsize=(9, 4.6), dpi=140)
+            xs = lat_df["detector"].tolist()
+            med = lat_df["us_per_sample_median"].tolist()
+            p95 = lat_df["us_per_sample_p95"].tolist()
+            width = 0.35
+            x_idx = np.arange(len(xs))
+            ax_lat.bar(x_idx - width/2, med, width, label="Median", color="#2563eb")
+            ax_lat.bar(x_idx + width/2, p95, width, label="95th percentile", color="#f59e0b")
+            ax_lat.set_yscale("log")
+            ax_lat.set_xticks(x_idx)
+            ax_lat.set_xticklabels(xs, rotation=15, ha="right")
+            ax_lat.set_ylabel("Inference latency (µs / sample, log scale)")
+            ax_lat.set_title("Inference latency comparison")
+            ax_lat.grid(True, axis="y", linestyle=":", alpha=0.5)
+            ax_lat.legend()
+            fig_lat.tight_layout()
+            st.pyplot(fig_lat)
+            st.caption(
+                "Note: latency here is software wall-clock on this machine, not embedded-device latency. "
+                "Interpret as relative cost between detectors on identical hardware."
+            )
+
+    # ----------------- TAB 3: QUANTUM CIRCUIT & SPECTRAL -----------------
+    with t_quantum:
+        q_result = aggregated.get("Quantum Kernel OCSVM")
+        if q_result is None:
+            st.info("Quantum detector was not part of this run. Enable it in the sidebar to see these panels.")
+        else:
+            # Rebuild a small quantum kernel just for visualisation using a shrunken sample
+            demo = QuantumKernelAnomalyDetector(
+                n_components=n_components, reps=quantum_reps, nu=ocsvm_nu,
+                train_sample_limit=min(60, train_sample_limit), noise_prob=noise_prob,
+            )
+            demo_train = benign_df.sample(n=min(80, len(benign_df)), random_state=RANDOM_STATE)
+            demo.fit(demo_train)
+
+            st.markdown("#### Quantum feature map (ZZFeatureMap)")
+            st.markdown(f"""
+            <div class="circuit-box">
+<pre>{demo.feature_map.draw(output='text')}</pre>
+            </div>
+            """, unsafe_allow_html=True)
+
+            st.markdown("---")
+            st.markdown("#### Quantum fidelity Gram matrix K_train (with current noise setting)")
+            st.pyplot(Visualizer.plot_kernel_matrix_heatmap(demo.K_train, max_display=40))
+
+            st.markdown("---")
+            st.markdown("#### Gram matrix spectral diagnostics")
+            report = QuantumGramSpectralAnalyzer.analyze(demo.K_train)
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Condition number κ", f"{report.condition_number}")
+            c2.metric("Spectral gap Δ", f"{report.spectral_gap:.4f}")
+            c3.metric("Effective rank", f"{report.effective_rank:.2f}")
+            c4.metric("Spectral entropy", f"{report.von_neumann_spectral_entropy:.3f}")
+            st.info(f"Barren plateau risk: {report.barren_plateau_risk}")
+
+            st.markdown("---")
+            st.markdown("#### Density matrix tomography (first training sample)")
+            sample_circuit = demo.feature_map.assign_parameters(demo.X_train_ref[0])
+            rho = QuantumInformationSpectroscopy.statevector_to_density_matrix(sample_circuit)
+            c_a, c_b = st.columns(2)
+            c_a.metric("Purity γ = Tr(ρ²)", f"{QuantumInformationSpectroscopy.quantum_purity(rho):.4f}")
+            c_b.metric("von Neumann entropy S(ρ)",
+                       f"{QuantumInformationSpectroscopy.von_neumann_entropy(rho):.4f}")
+
+            st.markdown("---")
+            st.markdown("#### NISQ noise sweep: ideal vs noisy kernel on this Gram matrix")
+            p_probe = st.slider("Additional depolarising probe (p)", 0.0, 0.2, 0.02, 0.005)
+            noise_sim = NISQNoiseRobustnessSimulator(depolarizing_rate=p_probe)
+            qc1 = demo.feature_map.assign_parameters(demo.X_train_ref[0])
+            qc2 = demo.feature_map.assign_parameters(demo.X_train_ref[1])
+            ideal_f, noisy_f = noise_sim.evaluate_noisy_fidelity(qc1, qc2)
+            c_n1, c_n2 = st.columns(2)
+            c_n1.metric("Ideal fidelity", f"{ideal_f:.4f}")
+            c_n2.metric("Noisy fidelity", f"{noisy_f:.4f}", delta=f"-{ideal_f - noisy_f:.4f}")
+
+    # ----------------- TAB 4: PCA SCREE -----------------
+    with t_scree:
+        st.markdown("#### PCA variance explained (fitted on benign train)")
+        st.markdown("""
+        The classical 115-feature N-BaIoT record cannot be embedded on 115 qubits (2^115 amplitudes).
+        PCA reduces to a small number of principal components before the quantum encoder.
+        """)
+        # Fit a preprocessor for display purposes only
+        from preprocessing import DataPreprocessor
+        pp = DataPreprocessor(n_components=n_components)
+        pp.fit(benign_df.sample(n=min(400, len(benign_df)), random_state=RANDOM_STATE))
+        info = pp.get_explained_variance()
+        st.pyplot(Visualizer.plot_pca_variance(info["explained_variance_ratio"]))
+        st.info(
+            f"Cumulative variance captured on {info['n_components']} components: "
+            f"{info['cumulative_explained_variance']*100:.2f}%"
+        )
+
+    # ----------------- TAB 5: SINGLE-PACKET SCANNER -----------------
+    with t_scan:
+        st.markdown("#### Single-packet inspector")
+        q_result = aggregated.get("Quantum Kernel OCSVM")
+        rep_res = None
+        if q_result and q_result.representative_result:
+            rep_res = q_result.representative_result
+
+        if rep_res is None:
+            st.info("Enable at least one detector to inspect predictions.")
+        else:
+            # We do not have the raw feature vectors from the run; re-generate a small
+            # test slice from the current benign_df to inspect.
+            demo_test = benign_df.sample(n=min(20, len(benign_df)), random_state=RANDOM_STATE).reset_index(drop=True)
+            idx = st.slider("Packet index", 0, len(demo_test) - 1, 0)
+            row = demo_test.iloc[[idx]]
+            st.markdown("##### Feature preview (first 10 dims)")
+            st.dataframe(row.iloc[:, :10], use_container_width=True)
+            st.caption(
+                "Per-detector real-time scoring across the full test batch is available in the "
+                "exported per-seed CSV under `results/runs/`."
+            )
+
+    # ----------------- TAB 6: EXPORT -----------------
+    with t_export:
+        st.markdown("#### Ready-to-copy LaTeX table")
+        latex_body = df_agg[["detector", "roc_auc", "pr_auc", "f1", "precision", "recall", "runtime_s"]].to_latex(
+            index=False,
+            caption=f"Anomaly detector comparison on {metadata['dataset_label']} "
+                    f"(mean ± std over {len(config_used['seeds'])} seeds).",
+            label="tab:iot_anomaly_comparison",
+            escape=False,
+        )
+        st.code(latex_body, language="latex")
+
+        st.markdown("---")
+        st.markdown("#### CSV downloads")
         c1, c2 = st.columns(2)
         with c1:
-            fig_roc = Visualizer.plot_roc_curves(results_list)
-            st.pyplot(fig_roc)
+            csv_agg = df_agg.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "Aggregated metrics",
+                data=csv_agg,
+                file_name="metrics_aggregated.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
         with c2:
-            fig_pr = Visualizer.plot_pr_curves(results_list)
-            st.pyplot(fig_pr)
-
-        c3, c4 = st.columns(2)
-        with c3:
-            fig_cm = Visualizer.plot_confusion_matrices(results_list)
-            st.pyplot(fig_cm)
-        with c4:
-            fig_run = Visualizer.plot_runtime_comparison(results_list)
-            st.pyplot(fig_run)
-
-    # -------------------------------------------------------------------------
-    # TAB 2: Quantum Circuit & Kernel Heatmap
-    # -------------------------------------------------------------------------
-    with t_circuit:
-        st.markdown("#### Quantum Feature Map Circuit Architecture")
-        st.markdown("""
-        The classical continuous vector $\\mathbf{z} \\in \\mathbb{R}^k$ is encoded into a quantum statevector 
-        $|\\Phi(\\mathbf{z})\\rangle = \\mathcal{U}_{\\Phi}(\\mathbf{z}) |0\\rangle^{\\otimes k}$ using Qiskit's `ZZFeatureMap`.
-        """)
-
-        circuit_str = str(q_det.feature_map.draw(output="text"))
-        st.markdown(f"""
-        <div class="circuit-box">
-<pre>{circuit_str}</pre>
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown("---")
-        st.markdown("#### Quantum State Fidelity Gram Matrix ($K_{\\text{train}}$)")
-        st.markdown("""
-        The heatmap below represents the pairwise quantum state transition fidelities:
-        $$K_{ij} = |\\langle \\Phi(\\mathbf{z}_i) | \\Phi(\\mathbf{z}_j) \\rangle|^2$$
-        Notice the diagonal entries are exactly $1.0$ (self-fidelity), and the matrix is strictly symmetric.
-        """)
-        fig_heat = Visualizer.plot_kernel_matrix_heatmap(q_det.K_train, max_display=40)
-        st.pyplot(fig_heat)
-
-    # -------------------------------------------------------------------------
-    # TAB 3: Quantum Spectral & Tomography
-    # -------------------------------------------------------------------------
-    with t_spectral:
-        st.markdown("#### Quantum Information Theory & Spectral Diagnostics")
-        st.markdown("""
-        Rigorous quantum computational diagnostics evaluating the density matrix $\\rho$, 
-        von Neumann entanglement entropy, condition number, and quantum metric alignment.
-        """)
-
-        # 1. Gram Matrix Spectral Report
-        spectral_report = QuantumGramSpectralAnalyzer.analyze(q_det.K_train)
-        c_spec1, c_spec2, c_spec3, c_spec4 = st.columns(4)
-        c_spec1.metric("Condition Number κ(K)", f"{spectral_report.condition_number}")
-        c_spec2.metric("Spectral Gap Δ", f"{spectral_report.spectral_gap:.4f}")
-        c_spec3.metric("Effective Rank r_eff", f"{spectral_report.effective_rank:.2f}")
-        c_spec4.metric("von Neumann Spectral Entropy", f"{spectral_report.von_neumann_spectral_entropy:.3f}")
-        
-        st.info(f"🛡️ Barren Plateau Concentration Risk: {spectral_report.barren_plateau_risk}")
-
-        # 2. Quantum Density Matrix & Entanglement
-        st.markdown("---")
-        st.markdown("#### Quantum State Tomography & Density Matrix ($\\rho$)")
-        sample_circuit = q_det.feature_map.assign_parameters(q_det.X_train_ref[0])
-        rho_0 = QuantumInformationSpectroscopy.statevector_to_density_matrix(sample_circuit)
-        purity_val = QuantumInformationSpectroscopy.quantum_purity(rho_0)
-        entropy_val = QuantumInformationSpectroscopy.von_neumann_entropy(rho_0)
-
-        c_tomo1, c_tomo2 = st.columns(2)
-        c_tomo1.metric("State Purity γ = Tr(ρ²)", f"{purity_val:.4f}", help="γ = 1.0 indicates a pure quantum state")
-        c_tomo2.metric("von Neumann Entanglement Entropy S(ρ)", f"{entropy_val:.4f}", help="Measures quantum correlation depth")
-
-        # 3. Trainable Variational Quantum Metric Learning (QML)
-        st.markdown("---")
-        st.markdown("#### Trainable Variational Metric Alignment (Parameter-Shift Rule)")
-        st.markdown("""
-        Instead of fixed feature maps, train parameterized rotation angles $\\boldsymbol{\\theta}$ 
-        using analytical quantum gradients evaluated via the **Parameter-Shift Rule**:
-        $$\\frac{\\partial K}{\\partial \\theta_i} = \\frac{K(\\theta + \\frac{\\pi}{2}) - K(\\theta - \\frac{\\pi}{2})}{2}$$
-        """)
-        if st.button("🚀 Train Variational Quantum Metric (5 Steps)"):
-            with st.spinner("Evaluating analytical quantum gradients via Parameter-Shift Rule..."):
-                v_learner = VariationalQuantumMetricLearner(n_qubits=n_components, n_layers=1, max_iterations=5)
-                v_learner.fit_alignment(q_det.X_train_ref[:20])
-                st.success("Variational quantum metric aligned!")
-                st.line_chart(pd.DataFrame({"Clustering Loss (Negative Overlap)": v_learner.loss_history}))
-
-        # 4. NISQ Hardware Noise Simulation
-        st.markdown("---")
-        st.markdown("#### NISQ Hardware Noise & Decoherence Simulation")
-        p_noise = st.slider("Simulated Depolarizing Channel Error Rate (p)", 0.0, 0.10, 0.02, 0.005)
-        noise_sim = NISQNoiseRobustnessSimulator(depolarizing_rate=p_noise)
-        qc_test1 = q_det.feature_map.assign_parameters(q_det.X_train_ref[0])
-        qc_test2 = q_det.feature_map.assign_parameters(q_det.X_train_ref[1])
-        ideal_f, noisy_f = noise_sim.evaluate_noisy_fidelity(qc_test1, qc_test2)
-
-        c_n1, c_n2 = st.columns(2)
-        c_n1.metric("Ideal Statevector Fidelity", f"{ideal_f:.4f}")
-        c_n2.metric("Physical NISQ Noisy Fidelity", f"{noisy_f:.4f}", delta=f"-{(ideal_f - noisy_f):.4f}")
-
-    # -------------------------------------------------------------------------
-    # TAB 4: Feature Space (PCA Scree)
-    # -------------------------------------------------------------------------
-    with t_scree:
-        st.markdown("#### Dimensionality Reduction & Information Retention")
-        st.markdown("""
-        Directly embedding 115 features requires $115$ qubits ($2^{115}$ statevector amplitudes), which is classically intractable.
-        PCA projects the data onto the top $k$ principal components before quantum state encoding.
-        """)
-        ev_info = q_det.preprocessor.get_explained_variance()
-        fig_scree = Visualizer.plot_pca_variance(ev_info["explained_variance_ratio"])
-        st.pyplot(fig_scree)
-
-        st.info(f"Cumulative Variance Captured across {ev_info['n_components']} Qubits: {ev_info['cumulative_explained_variance']*100:.2f}%")
-
-    # -------------------------------------------------------------------------
-    # TAB 4: Real-Time Single-Packet Scanner
-    # -------------------------------------------------------------------------
-    with t_scan:
-        st.markdown("#### Live Network Packet Anomaly Inspector")
-        st.markdown("Select an individual packet from the test stream to inspect real-time detection scores across all models:")
-
-        sample_idx = st.slider("Select Packet Index from Test Stream", 0, len(test_data) - 1, 0)
-        selected_row = test_data.iloc[[sample_idx]]
-        true_type = "Malicious (Attack)" if y_true[sample_idx] == 1 else "Benign (Normal)"
-
-        q_pred_label = "Normal" if q_preds[sample_idx] == 1 else "ANOMALY"
-        q_score_val = q_scores[sample_idx]
-
-        c_s1, c_s2, c_s3 = st.columns(3)
-        c_s1.metric("Ground Truth Label", true_type)
-        c_s2.metric("Quantum Detector Verdict", q_pred_label, delta=f"Score: {q_score_val:.4f}")
-        c_s3.metric("Quantum Feature Register", f"{n_components} Qubits")
-
-        st.markdown("##### Packet Feature Values (First 10 of 115)")
-        st.dataframe(selected_row.iloc[:, :10], use_container_width=True)
-
-    # -------------------------------------------------------------------------
-    # TAB 5: LaTeX & Report Export
-    # -------------------------------------------------------------------------
-    with t_export:
-        st.markdown("#### Ready-to-Copy LaTeX Table for Sem-3 Project Report")
-        latex_code = comp_df[["model", "roc_auc", "pr_auc", "f1", "precision", "recall", "runtime_seconds"]].to_latex(
-            index=False,
-            caption="Comparison of Quantum Kernel and Classical Anomaly Detectors on N-BaIoT",
-            label="tab:quantum_comparison",
-            float_format="%.4f",
-        )
-        st.code(latex_code, language="latex")
-
-        st.markdown("---")
-        st.markdown("#### Download CSV Results")
-        col_d1, col_d2 = st.columns(2)
-        with col_d1:
-            pred_export = test_data.copy()
-            pred_export.insert(0, "ground_truth", np.where(y_true == 1, "Attack", "Benign"))
-            pred_export.insert(1, "quantum_verdict", np.where(q_preds == 1, "Normal", "Anomaly"))
-            pred_export.insert(2, "quantum_anomaly_score", np.round(q_scores, 4))
-            csv_pred = pred_export.to_csv(index=False).encode("utf-8")
+            csv_lat = latency_to_dataframe(aggregated).to_csv(index=False).encode("utf-8")
             st.download_button(
-                "⬇️ Download Detailed Predictions CSV",
-                data=csv_pred,
-                file_name="quantum_predictions.csv",
+                "Latency metrics",
+                data=csv_lat,
+                file_name="metrics_latency.csv",
                 mime="text/csv",
                 use_container_width=True,
             )
-        with col_d2:
-            comp_csv = comp_df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "⬇️ Download Model Comparison CSV",
-                data=comp_csv,
-                file_name="model_comparison.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
+
+        st.markdown("---")
+        st.markdown("#### Run metadata")
+        st.json({"metadata": metadata, "config": config_used})

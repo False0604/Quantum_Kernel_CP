@@ -14,11 +14,12 @@ This project provides a scientifically honest, reproducible benchmark framework 
 
 ## Key Highlights
 
-- **Authentic Benchmark**: Evaluated on the real **N-BaIoT** dataset (93 files across 9 commercial IoT devices attacked by Mirai and Gafgyt botnets).
-- **Leak-Free Preprocessing**: Strictly isolates benign training data from test evaluation. Standardization and PCA are fitted exclusively on benign training traffic.
-- **Modern Quantum Stack**: Built with Qiskit 2.5, Qiskit Aer 0.17, and Qiskit Machine Learning 0.9 (`zz_feature_map` and `FidelityQuantumKernel`).
-- **Apple-to-Apple Fair Comparison**: Evaluates Quantum Kernel OCSVM, Classical Gaussian RBF OCSVM, and Isolation Forest on identical data splits and feature subspaces.
-- **Interactive UI & Presentation Modes**: Full Streamlit dashboard featuring professional academic visualization and an optional presentation "🧠 BRAINROT MODE" for engaging viva demonstrations.
+- **Two-dataset scope**: N-BaIoT (network) and TON-IoT (telemetry) are both supported, along with a synthetic fallback for environments without the raw CSVs.
+- **Five detectors behind one interface**: Quantum-Kernel OCSVM (ZZFeatureMap + FidelityQuantumKernel + precomputed OCSVM), Classical RBF OCSVM, Isolation Forest, Local Outlier Factor (novelty), and a Shallow PyTorch Autoencoder.
+- **Ideal or NISQ quantum simulation**: A depolarising channel is applied analytically to both encoded states so a full benchmark run can be executed under noise without extra circuit evaluations.
+- **Leak-free protocol**: StandardScaler + PCA are strictly fitted on benign training data; attack rows are quarantined until evaluation.
+- **Roadmap-grade rigour**: Multi-seed reproducibility (mean ± std across up to five seeds), µs/sample inference latency with warm-up, median and p95, plus persisted run logs under `results/runs/` with git commit hash and YAML config.
+- **Interactive Streamlit dashboard**: Six tabs covering benchmark comparison, latency, quantum circuit / spectral / tomography, PCA scree, single-packet inspector, and LaTeX / CSV export.
 
 ---
 
@@ -79,27 +80,25 @@ Precomputed One-Class SVM    Decision Scores
 
 ```text
 VS Code/ML-Learning/
-├── config.py                 # Central hyperparameter configuration
-├── data_loader.py            # Dataset discovery, N-BaIoT parser, generic CSV loader
-├── preprocessing.py          # Leak-free StandardScaler and configurable PCA pipeline
-├── quantum_detector.py       # zz_feature_map + FidelityQuantumKernel + precomputed OCSVM
-├── classical_detector.py     # Classical RBF OCSVM and Isolation Forest baselines
-├── evaluation.py             # Metrics (ROC-AUC, PR-AUC, F1, confusion matrix)
+├── config.py                 # Central hyperparameter and path configuration
+├── data_loader.py            # N-BaIoT + TON-IoT discovery, generic CSV loader, synthetic feed
+├── preprocessing.py          # Leak-free StandardScaler + PCA pipeline
+├── quantum_detector.py       # zz_feature_map + FidelityQuantumKernel + noise-model transform + OCSVM
+├── classical_detector.py     # RBF OCSVM, Isolation Forest, LOF baselines
+├── autoencoder_detector.py   # Shallow PyTorch autoencoder (reconstruction MSE anomaly score)
+├── evaluation.py             # Metrics (ROC-AUC, PR-AUC, F1, precision, recall, confusion matrix)
 ├── visualization.py          # Publication-ready Matplotlib visualizer
+├── benchmark_harness.py      # Multi-seed runs, µs/sample latency, persisted run logs
+├── advanced_quantum_engine.py# Density matrix, Gram spectral analysis, variational, NISQ, hybrid ensemble
 ├── run_experiment.py         # Reproducible CLI experiment runner & parameter ablation
-├── app.py                    # Presentation-Ready Streamlit UI (Professional + Brainrot Mode)
+├── app.py                    # Streamlit dashboard (six tabs, interactive controls)
 ├── requirements.txt          # Verified dependency manifest
-├── README.md                 # Complete documentation
-├── .gitignore                # Git safety configuration
-├── tests/                    # 16 unit & integration tests (100% passing)
-├── docs/                     # Academic documentation & Viva preparation
-│   ├── architecture.md       # Technical pipeline architecture
-│   ├── experiment.md         # Scientific protocol and fairness rules
-│   ├── results.md            # Empirical findings & analysis
-│   └── viva.md               # 22 curated viva questions and model answers
+├── README.md                 # Documentation
+├── tests/                    # Unit & integration tests
 └── results/
-    ├── model_comparison.csv  # Exported benchmark metrics
-    ├── experiment_config.json# Reproducibility metadata
+    ├── model_comparison.csv  # Legacy single-run comparison
+    ├── experiment_config.json
+    ├── runs/                 # Persisted multi-seed runs (config.yaml + metrics_*.csv + audit.json)
     └── figures/              # Exported high-resolution plots
 ```
 
