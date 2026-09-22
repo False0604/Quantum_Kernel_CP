@@ -2,6 +2,12 @@
 preprocessing.py
 Leakage-free preprocessing pipeline with StandardScaler and configurable PCA.
 All transformations are strictly fitted ONLY on benign training data.
+
+An optional angle-normalization stage is supported for quantum feature maps: after
+StandardScaler + PCA, each principal component can be clipped to the range
+[angle_lo, angle_hi] using empirical training-data quantiles, which prevents the
+rotation-gate wrap-around problem when the encoder embeds classical features
+as circuit rotation angles.
 """
 
 from typing import Dict, List, Optional, Tuple, Union
@@ -17,22 +23,30 @@ class DataPreprocessor:
     """
     Leak-free preprocessor for tabular IoT network traffic.
     Fits feature selection, median imputation, standardization, and PCA
-    strictly on benign training data.
+    strictly on benign training data. Optionally rescales each PCA component
+    to a fixed angle range so a downstream quantum feature map does not wrap.
     """
 
     def __init__(
         self,
         n_components: int = DEFAULT_PCA_COMPONENTS,
         random_state: int = RANDOM_STATE,
+        angle_range: Optional[Tuple[float, float]] = None,
+        angle_quantile: float = 0.99,
     ):
         self.n_components = n_components
         self.random_state = random_state
+        self.angle_range = angle_range
+        self.angle_quantile = angle_quantile
 
         self.fitted = False
         self.active_features: List[str] = []
         self.medians: pd.Series = pd.Series(dtype=float)
         self.scaler = StandardScaler()
         self.pca: Optional[PCA] = None
+
+        self._pca_lower: Optional[np.ndarray] = None
+        self._pca_upper: Optional[np.ndarray] = None
 
         self.explained_variance_ratio_: List[float] = []
         self.cumulative_explained_variance_: float = 0.0
@@ -82,8 +96,32 @@ class DataPreprocessor:
         self.explained_variance_ratio_ = self.pca.explained_variance_ratio_.tolist()
         self.cumulative_explained_variance_ = float(np.sum(self.pca.explained_variance_ratio_))
 
+        # Angle-range calibration: compute empirical quantile bounds on PCA-projected
+        # benign training data so we can later linearly rescale into (angle_lo, angle_hi).
+        # Using quantiles instead of raw min/max makes the mapping robust to a handful
+        # of outlying benign points.
+        if self.angle_range is not None:
+            projected_train = self.pca.transform(scaled_train)
+            q = float(np.clip(self.angle_quantile, 0.5, 1.0))
+            lo = np.quantile(projected_train, 1.0 - q, axis=0)
+            hi = np.quantile(projected_train, q, axis=0)
+            span = np.where((hi - lo) < 1e-9, 1.0, hi - lo)
+            self._pca_lower = lo
+            self._pca_upper = lo + span
+
         self.fitted = True
         return self
+
+    def _angle_scale(self, projected: np.ndarray) -> np.ndarray:
+        """Linearly rescales each PCA component into (angle_lo, angle_hi), then clips."""
+        if self.angle_range is None or self._pca_lower is None:
+            return projected
+        angle_lo, angle_hi = self.angle_range
+        span = self._pca_upper - self._pca_lower
+        normalised = (projected - self._pca_lower) / span
+        scaled = angle_lo + normalised * (angle_hi - angle_lo)
+        # Clip to the target range to guarantee no rotation-gate wrap-around
+        return np.clip(scaled, angle_lo, angle_hi)
 
     def transform(self, data: pd.DataFrame) -> np.ndarray:
         """
@@ -96,7 +134,6 @@ class DataPreprocessor:
         df = data.select_dtypes(include=[np.number]).copy()
         df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
-        # Align with active features discovered in training data
         aligned_dict = {}
         for col in self.active_features:
             if col in df.columns:
@@ -109,7 +146,7 @@ class DataPreprocessor:
         scaled = self.scaler.transform(aligned.values)
         projected = self.pca.transform(scaled)
 
-        return projected
+        return self._angle_scale(projected)
 
     def fit_transform(self, benign_train: pd.DataFrame) -> np.ndarray:
         """Convenience method to fit on benign train and return the projected features."""
